@@ -45,15 +45,19 @@ def count_params(model):
 
 
 def plot_history(history, out_path):
-    """Plot train/val loss and val SSIM per epoch to a PNG."""
+    """Plot train/val loss, plus val SSIM when the history has it, to a PNG."""
     epochs = range(1, len(history["train_loss"]) + 1)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    has_ssim = bool(history.get("val_ssim"))
+    fig, axes = plt.subplots(1, 2 if has_ssim else 1, figsize=(10 if has_ssim else 5, 4))
+    ax1 = axes[0] if has_ssim else axes
     ax1.plot(epochs, history["train_loss"], label="train")
     ax1.plot(epochs, history["val_loss"], label="validate")
     ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss"); ax1.legend(); ax1.set_title("Loss")
-    ax2.plot(epochs, history["val_ssim"], color="tab:green")
-    ax2.axhline(0.6, linestyle="--", color="grey", label="target 0.6")
-    ax2.set_xlabel("Epoch"); ax2.set_ylabel("SSIM"); ax2.legend(); ax2.set_title("Validation SSIM")
+    if has_ssim:
+        ax2 = axes[1]
+        ax2.plot(epochs, history["val_ssim"], color="tab:green")
+        ax2.axhline(0.6, linestyle="--", color="grey", label="target 0.6")
+        ax2.set_xlabel("Epoch"); ax2.set_ylabel("SSIM"); ax2.legend(); ax2.set_title("Validation SSIM")
     fig.tight_layout()
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     fig.savefig(out_path, dpi=120)

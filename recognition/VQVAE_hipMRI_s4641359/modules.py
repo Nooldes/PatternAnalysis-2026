@@ -289,3 +289,76 @@ def vqvae_loss(recon, x, vq_loss):
     """
     recon_loss = F.mse_loss(recon, x)
     return recon_loss + vq_loss, recon_loss
+
+
+# ---------------------------------------------------------------------------
+# PixelCNN prior over VQ-VAE code grids
+# (van den Oord et al., 2016, "Conditional Image Generation with PixelCNN
+# Decoders"). Learns p(code grid) autoregressively in raster order so new
+# code grids can be sampled and decoded into new slices.
+# ---------------------------------------------------------------------------
+
+
+class MaskedConv2d(nn.Conv2d):
+    """Conv layer that only sees pixels above, and to the left in the same row.
+
+    Mask type 'A' also hides the centre pixel (first layer, so a position
+    never sees its own value); type 'B' allows the centre (later layers).
+    """
+
+    def __init__(self, mask_type, in_ch, out_ch, kernel_size):
+        super().__init__(in_ch, out_ch, kernel_size, padding=kernel_size // 2)
+        k = kernel_size
+        mask = torch.ones(k, k)
+        mask[k // 2, k // 2 + (mask_type == "B"):] = 0  # right of centre (and centre for 'A')
+        mask[k // 2 + 1:] = 0                            # rows below centre
+        self.register_buffer("mask", mask[None, None])
+
+    def forward(self, x):
+        return F.conv2d(x, self.weight * self.mask, self.bias, padding=self.padding)
+
+
+class GatedMaskedBlock(nn.Module):
+    """Residual masked conv block with a gated tanh * sigmoid activation."""
+
+    def __init__(self, channels, kernel_size=3):
+        super().__init__()
+        self.conv = MaskedConv2d("B", channels, 2 * channels, kernel_size)
+        self.out = nn.Conv2d(channels, channels, kernel_size=1)
+
+    def forward(self, x):
+        a, b = self.conv(x).chunk(2, dim=1)
+        return x + self.out(torch.tanh(a) * torch.sigmoid(b))
+
+
+class PixelCNNPrior(nn.Module):
+    """Autoregressive model of VQ-VAE code grids (B, H, W) with K classes per position."""
+
+    def __init__(self, num_embeddings=512, channels=128, n_blocks=10):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embed = nn.Embedding(num_embeddings, channels)
+        self.input_conv = MaskedConv2d("A", channels, channels, kernel_size=7)
+        self.blocks = nn.Sequential(*[GatedMaskedBlock(channels) for _ in range(n_blocks)])
+        self.head = nn.Sequential(
+            nn.ReLU(), nn.Conv2d(channels, channels, kernel_size=1),
+            nn.ReLU(), nn.Conv2d(channels, num_embeddings, kernel_size=1),
+        )
+
+    def forward(self, codes):
+        """Code grid (B, H, W) -> logits over codes (B, K, H, W)."""
+        x = self.embed(codes).permute(0, 3, 1, 2).contiguous()
+        return self.head(self.blocks(self.input_conv(x)))
+
+    @torch.no_grad()
+    def sample(self, n, grid_shape, device, temperature=1.0):
+        """Sample n code grids one position at a time in raster order."""
+        h, w = grid_shape
+        codes = torch.zeros(n, h, w, dtype=torch.long, device=device)
+        for i in range(h):
+            for j in range(w):
+                # Masks only look up/left, so rows below i can't affect position (i, j):
+                # run on rows 0..i only, which roughly halves sampling time.
+                logits = self.forward(codes[:, :i + 1])[:, :, i, j] / temperature
+                codes[:, i, j] = torch.multinomial(F.softmax(logits, dim=1), 1).squeeze(1)
+        return codes
