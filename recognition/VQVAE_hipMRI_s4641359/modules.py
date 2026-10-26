@@ -1,9 +1,14 @@
 """
 modules.py - Model components for the HipMRI generative project.
 
-Currently contains the convolutional VAE baseline (Kingma & Welling, 2014).
-The VQ-VAE and PixelCNN prior are added alongside it so both models share
-the same encoder/decoder style and can be compared fairly.
+Contains:
+- VAE: convolutional VAE baseline (Kingma & Welling, 2014).
+- VQVAE: vector-quantised VAE (van den Oord et al., 2017, "Neural Discrete
+  Representation Learning"). The VectorQuantizer (nearest-codebook lookup,
+  codebook + commitment loss, straight-through estimator) is adapted from
+  the COMP3710 "VQ-VAE MNIST demo" notebook, extended here with codebook
+  usage tracking, perplexity and dead-code resets, and a deeper residual
+  encoder/decoder for 256x128 MRI slices.
 
 Inputs are single-channel 256x128 slices scaled to [0, 1].
 Pure PyTorch: no NumPy is used in this file.
@@ -107,3 +112,180 @@ def vae_loss(recon, x, mu, logvar, beta=1.0):
     recon_loss = F.mse_loss(recon, x, reduction="sum") / batch
     kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / batch
     return recon_loss + beta * kl, recon_loss, kl
+
+
+# ---------------------------------------------------------------------------
+# VQ-VAE (van den Oord et al., 2017, "Neural Discrete Representation Learning")
+#
+# The VectorQuantizer distance / argmin / straight-through structure is adapted
+# from the COMP3710 VQ-VAE MNIST demo. Additions for HipMRI: codebook usage
+# tracking (perplexity) and resetting of unused ("dead") codes, plus a deeper
+# residual encoder/decoder sized for 256x128 slices.
+# ---------------------------------------------------------------------------
+
+
+class ResidualBlock(nn.Module):
+    """3x3 -> 1x1 conv residual block, as used in the VQ-VAE paper."""
+
+    def __init__(self, channels, hidden):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.ReLU(),
+            nn.Conv2d(channels, hidden, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(hidden, channels, kernel_size=1),
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
+
+
+class VectorQuantizer(nn.Module):
+    """Maps each encoder vector to its nearest codebook entry.
+
+    Returns the quantised features (with a straight-through gradient), the
+    VQ loss (codebook + beta * commitment), the code indices and the codebook
+    perplexity (exp of the entropy of code usage; K means every code is used
+    equally, values near 1 mean the codebook has collapsed).
+    """
+
+    def __init__(self, num_embeddings=512, embedding_dim=64, commitment_cost=0.25,
+                 dead_threshold=1e-3, reset_every=200):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.commitment_cost = commitment_cost
+        self.dead_threshold = dead_threshold
+        self.reset_every = reset_every
+
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.embedding.weight.data.uniform_(-1.0 / num_embeddings, 1.0 / num_embeddings)
+        # Running (EMA) fraction of vectors assigned to each code, for dead-code resets.
+        self.register_buffer("usage", torch.full((num_embeddings,), 1.0 / num_embeddings))
+        self.register_buffer("steps", torch.zeros((), dtype=torch.long))
+
+    def forward(self, z_e):
+        # (B, D, H, W) -> (B*H*W, D)
+        z_perm = z_e.permute(0, 2, 3, 1).contiguous()
+        flat = z_perm.view(-1, self.embedding_dim)
+
+        # Squared Euclidean distance to every code: ||z||^2 + ||e||^2 - 2 z.e
+        distances = (flat.pow(2).sum(1, keepdim=True)
+                     + self.embedding.weight.pow(2).sum(1)
+                     - 2.0 * flat @ self.embedding.weight.t())
+        indices = distances.argmin(dim=1)
+        z_q = self.embedding(indices).view(z_perm.shape)
+
+        # Codebook loss moves codes toward encoder outputs; commitment loss
+        # keeps the encoder close to its chosen codes.
+        loss = (F.mse_loss(z_q, z_perm.detach())
+                + self.commitment_cost * F.mse_loss(z_perm, z_q.detach()))
+
+        # Straight-through estimator: forward uses z_q, backward copies gradients to z_e.
+        z_q = z_perm + (z_q - z_perm).detach()
+
+        counts = torch.bincount(indices, minlength=self.num_embeddings).float()
+        probs = counts / counts.sum()
+        perplexity = torch.exp(-(probs * torch.log(probs + 1e-10)).sum())
+
+        if self.training:
+            self._track_and_reset(probs, flat.detach())
+
+        z_q = z_q.permute(0, 3, 1, 2).contiguous()
+        indices = indices.view(z_e.shape[0], z_e.shape[2], z_e.shape[3])
+        return z_q, loss, indices, perplexity
+
+    @torch.no_grad()
+    def _track_and_reset(self, probs, flat):
+        """Every `reset_every` steps, move rarely used codes onto random encoder outputs."""
+        self.usage.mul_(0.99).add_(0.01 * probs)
+        self.steps += 1
+        if self.steps % self.reset_every == 0:
+            dead = self.usage < self.dead_threshold
+            n_dead = int(dead.sum())
+            if n_dead > 0:
+                choice = torch.randint(0, flat.size(0), (n_dead,), device=flat.device)
+                self.embedding.weight.data[dead] = flat[choice]
+                self.usage[dead] = 1.0 / self.num_embeddings
+
+    def lookup(self, indices):
+        """Code indices (B, H, W) -> quantised features (B, D, H, W)."""
+        return self.embedding(indices).permute(0, 3, 1, 2).contiguous()
+
+
+class VQEncoder(nn.Module):
+    """Downsamples by 2**n_down with stride-2 convs, then residual blocks -> D channels."""
+
+    def __init__(self, hidden=128, res_hidden=64, n_res=2, embedding_dim=64, n_down=2):
+        super().__init__()
+        layers, in_ch = [], 1
+        for i in range(n_down):
+            out_ch = hidden // 2 if i < n_down - 1 else hidden
+            layers += [nn.Conv2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1), nn.ReLU()]
+            in_ch = out_ch
+        layers.append(nn.Conv2d(hidden, hidden, kernel_size=3, padding=1))
+        layers += [ResidualBlock(hidden, res_hidden) for _ in range(n_res)]
+        layers += [nn.ReLU(), nn.Conv2d(hidden, embedding_dim, kernel_size=1)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class VQDecoder(nn.Module):
+    """Mirror of VQEncoder: residual blocks then 2**n_down upsampling, sigmoid output."""
+
+    def __init__(self, hidden=128, res_hidden=64, n_res=2, embedding_dim=64, n_down=2):
+        super().__init__()
+        layers = [nn.Conv2d(embedding_dim, hidden, kernel_size=3, padding=1)]
+        layers += [ResidualBlock(hidden, res_hidden) for _ in range(n_res)]
+        layers.append(nn.ReLU())
+        in_ch = hidden
+        for i in range(n_down):
+            last = i == n_down - 1
+            out_ch = 1 if last else hidden // 2
+            layers.append(nn.ConvTranspose2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1))
+            layers.append(nn.Sigmoid() if last else nn.ReLU())
+            in_ch = out_ch
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, z_q):
+        return self.net(z_q)
+
+
+class VQVAE(nn.Module):
+    """Encoder -> VectorQuantizer -> Decoder.
+
+    With n_down=2 a 256x128 slice becomes a 64x32 grid of code indices.
+    """
+
+    def __init__(self, num_embeddings=512, embedding_dim=64, hidden=128,
+                 res_hidden=64, n_res=2, n_down=2, commitment_cost=0.25):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.encoder = VQEncoder(hidden, res_hidden, n_res, embedding_dim, n_down)
+        self.vq = VectorQuantizer(num_embeddings, embedding_dim, commitment_cost)
+        self.decoder = VQDecoder(hidden, res_hidden, n_res, embedding_dim, n_down)
+
+    def forward(self, x):
+        z_q, vq_loss, indices, perplexity = self.vq(self.encoder(x))
+        return self.decoder(z_q), vq_loss, indices, perplexity
+
+    @torch.no_grad()
+    def encode_indices(self, x):
+        """Image batch -> grid of code indices (B, H', W')."""
+        return self.vq(self.encoder(x))[2]
+
+    @torch.no_grad()
+    def decode_indices(self, indices):
+        """Grid of code indices -> images. Used for prior samples."""
+        return self.decoder(self.vq.lookup(indices))
+
+
+def vqvae_loss(recon, x, vq_loss):
+    """VQ-VAE loss = mean-squared reconstruction error + VQ loss.
+
+    Returns (total, reconstruction) so each can be logged.
+    """
+    recon_loss = F.mse_loss(recon, x)
+    return recon_loss + vq_loss, recon_loss
