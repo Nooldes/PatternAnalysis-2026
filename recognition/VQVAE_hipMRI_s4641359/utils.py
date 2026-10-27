@@ -1,10 +1,16 @@
-"""
-utils.py - Shared helpers: SSIM metric, parameter counting, plotting.
+# AI Declaration
+#
+# Tool: Claude (Anthropic), used conversationally over several requests.
+#
+# What the AI did in this file:
+# - Wrote the SSIM metric (from the Wang et al., 2004 formula), parameter
+#   counting, training-curve and image-grid plotting.
+# - At my request, added saving hyperparameters inside checkpoints so
+#   models can be reloaded with the settings they were trained with.
+#
+# What I did:
+# - Used these helpers through train.py and predict.py.
 
-SSIM follows Wang et al. (2004), "Image quality assessment: from error
-visibility to structural similarity", using an 11x11 Gaussian window
-(sigma 1.5) on images scaled to [0, 1].
-"""
 
 import os
 
@@ -21,9 +27,8 @@ def _gaussian_window(size=11, sigma=1.5, device="cpu"):
     g = g / g.sum()
     return (g[:, None] @ g[None, :])[None, None]  # (1, 1, size, size)
 
-
+# Mean SSIM per image for batches of shape
 def ssim(x, y, data_range=1.0):
-    """Mean SSIM per image for batches of shape (N, 1, H, W). Returns (N,)."""
     window = _gaussian_window(device=x.device)
     pad = window.shape[-1] // 2
     c1, c2 = (0.01 * data_range) ** 2, (0.03 * data_range) ** 2
@@ -38,14 +43,12 @@ def ssim(x, y, data_range=1.0):
         (mu_x ** 2 + mu_y ** 2 + c1) * (var_x + var_y + c2))
     return ssim_map.flatten(1).mean(dim=1)
 
-
+# Number of trainable parameters.
 def count_params(model):
-    """Number of trainable parameters."""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-
+# Plot train/val loss, plus val SSIM when the history has it, to a PNG.
 def plot_history(history, out_path):
-    """Plot train/val loss, plus val SSIM when the history has it, to a PNG."""
     epochs = range(1, len(history["train_loss"]) + 1)
     has_ssim = bool(history.get("val_ssim"))
     fig, axes = plt.subplots(1, 2 if has_ssim else 1, figsize=(10 if has_ssim else 5, 4))
@@ -63,9 +66,8 @@ def plot_history(history, out_path):
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
 
-
+# Save a grid of images to a PNG
 def save_image_grid(images, out_path, ncols=8, title=None):
-    """Save a grid of (N, 1, H, W) images in [0, 1] to a PNG."""
     images = images.detach().cpu()
     n = images.size(0)
     nrows = (n + ncols - 1) // ncols

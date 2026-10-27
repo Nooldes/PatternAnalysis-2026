@@ -1,15 +1,22 @@
-"""
-dataset.py - HipMRI 2D slice loading for the VQ-VAE project.
+# AI Declaration
+#
+# Tool: Claude (Anthropic), used conversationally over several requests.
+#
+# What the AI did in this file:
+# - Wrote the Nifti loader (following Appendix B of the project spec),
+#   per-slice min-max scaling to [0, 1], resizing to 256x128, and the
+#   PyTorch Dataset and DataLoaders for the provided splits.
+# - Wrote the data audit (slice counts, shapes, intensity range) and the
+#   patient-overlap check based on case IDs in the filenames.
+#
+# What I did:
+# - Copied the HipMRI data from Rangpur and ran the audit on it
+#   (11,460 / 660 / 540 slices; 31 / 4 / 3 patients; no overlap).
+# - Used the audit results in my feasibility review.
 
-Loads 2D prostate MRI slices stored as Nifti files, scales each slice to
-[0, 1], resizes to a fixed shape, and wraps them in PyTorch Datasets and
-DataLoaders for the provided train / validate / test splits.
-
-Run directly to audit the data:
-    python dataset.py --data_root "path/to/keras_slices_data"
 
 Nifti loading follows Appendix B of the COMP3710 project specification.
-"""
+
 
 import argparse
 import os
@@ -35,50 +42,43 @@ SPLIT_FOLDERS = {
 # Every slice is resized to this (height, width) so batches stack cleanly.
 DEFAULT_SHAPE = (256, 128)
 
-
+# Load one Nifti slice as a 2D NumPy array
 def load_slice(path):
-    """Load one Nifti slice as a float32 2D NumPy array."""
+
     image = nib.load(path).get_fdata(caching="unchanged")
     if image.ndim == 3:  # some HipMRI slices carry an extra trailing dim
         image = image[:, :, 0]
     return image.astype(np.float32)
 
-
+# Min-max scale a slice to [0, 1]; constant slices become all zeros.
 def normalise(image):
-    """Min-max scale a slice to [0, 1]; constant slices become all zeros."""
+
     low, high = image.min(), image.max()
     if high - low < 1e-8:
         return np.zeros_like(image)
     return (image - low) / (high - low)
 
-
+# Extract the patient/case ID from a filename
+# Falls back to the filename stem if no case number is found, so the
+# overlap check still runs (it will just be per-file).
 def patient_id(path):
-    """Extract the patient/case ID from a filename, e.g. 'case_004_...' -> '004'.
 
-    Falls back to the filename stem if no case number is found, so the
-    overlap check still runs (it will just be per-file).
-    """
     name = os.path.basename(path)
     match = re.search(r"case_?(\d+)", name, flags=re.IGNORECASE)
     return match.group(1) if match else name.split(".")[0]
 
-
+# Return sorted Nifti paths for one split ('train', 'validate', 'test').
 def list_split_files(data_root, split):
-    """Return sorted Nifti paths for one split ('train', 'validate', 'test')."""
+
     folder = os.path.join(data_root, SPLIT_FOLDERS[split])
     files = sorted(glob(os.path.join(folder, "*.nii*")))
     if not files:
         raise FileNotFoundError(f"No Nifti files found in {folder}")
     return files
 
-
+# In-memory dataset of normalised, resized HipMRI 2D slices.
+# Each item is a float tensor of shape (1, H, W) with values in [0, 1].
 class HipMRIDataset(Dataset):
-    """In-memory dataset of normalised, resized HipMRI 2D slices.
-
-    Each item is a float tensor of shape (1, H, W) with values in [0, 1].
-    The 2D slice set is small enough to hold in RAM, which keeps training
-    fast and avoids re-reading Nifti files every epoch.
-    """
 
     def __init__(self, files, shape=DEFAULT_SHAPE, augment=False):
         self.files = files
@@ -104,10 +104,10 @@ class HipMRIDataset(Dataset):
             image = (image * (1 + 0.05 * (torch.rand(1) - 0.5))).clamp(0, 1)
         return image
 
-
+# Build train / validate / test DataLoaders from the provided splits.
 def get_dataloaders(data_root, batch_size=32, shape=DEFAULT_SHAPE,
                     num_workers=0, augment_train=False):
-    """Build train / validate / test DataLoaders from the provided splits."""
+
     loaders = {}
     for split in SPLIT_FOLDERS:
         dataset = HipMRIDataset(list_split_files(data_root, split), shape,
@@ -118,9 +118,9 @@ def get_dataloaders(data_root, batch_size=32, shape=DEFAULT_SHAPE,
                                     pin_memory=torch.cuda.is_available())
     return loaders
 
-
+# Report any patient IDs that appear in more than one split.
 def check_patient_overlap(data_root):
-    """Report any patient IDs that appear in more than one split."""
+
     split_ids = {split: {patient_id(p) for p in list_split_files(data_root, split)}
                  for split in SPLIT_FOLDERS}
     owners = defaultdict(list)
@@ -130,9 +130,9 @@ def check_patient_overlap(data_root):
     leaks = {pid: splits for pid, splits in owners.items() if len(splits) > 1}
     return split_ids, leaks
 
-
+# Print the data audit used in the feasibility review.
 def audit(data_root):
-    """Print the data audit used in the feasibility review."""
+
     print(f"Data root: {data_root}\n")
     for split in SPLIT_FOLDERS:
         files = list_split_files(data_root, split)

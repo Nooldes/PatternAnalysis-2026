@@ -1,24 +1,20 @@
-"""
-train.py - Train, validate and test models on HipMRI 2D slices.
+# AI Declaration
+#
+# Tool: Claude (Anthropic), used conversationally over several requests.
+#
+# What the AI did in this file:
+# - Wrote the training, validation and test loop for the VAE and VQ-VAE,
+#   with SSIM, codebook perplexity, peak VRAM and timing logged.
+# - Added PixelCNN prior training on code grids from a trained VQ-VAE,
+#   followed by sampling new slices.
+#
+# What I did:
+# - Ran all training runs on my laptop GPU: VAE baseline (20 epochs),
+#   VQ-VAE with 64x32 codes (15 epochs), VQ-VAE with 32x16 codes
+#   (12 epochs), and PixelCNN priors on both code grids.
+# - Chose the run settings and compared results between runs.
 
-Supports three models:
-  vae    - convolutional VAE baseline
-  vqvae  - VQ-VAE (main model)
-  prior  - PixelCNN prior over a trained VQ-VAE's code grids (needs --vqvae_ckpt)
 
-For vae/vqvae, each epoch logs train/val loss and validation SSIM (plus
-codebook perplexity for the VQ-VAE), saves the best weights by val SSIM, and
-at the end reports test SSIM, parameter count, peak GPU memory and time per
-epoch. For the prior, the loss is cross-entropy over codes (also reported in
-bits per code), and the best weights are chosen by validation loss.
-
-Examples:
-    python train.py --model vqvae --data_root "path/to/keras_slices_data" --epochs 15
-    python train.py --model prior --data_root "path/to/keras_slices_data" \
-        --vqvae_ckpt outputs/vqvae/best.pt --epochs 15
-
-Outputs go to --out_dir (default: outputs/<model>/), which is git-ignored.
-"""
 
 import argparse
 import json
@@ -35,17 +31,17 @@ from dataset import get_dataloaders
 from modules import VAE, VQVAE, PixelCNNPrior, vae_loss, vqvae_loss
 from utils import count_params, plot_history, save_image_grid, ssim
 
-
+# Create the model selected by --model.
 def build_model(args):
-    """Create the model selected by --model."""
+
     if args.model == "vae":
         return VAE(latent_dim=args.latent_dim)
     return VQVAE(num_embeddings=args.num_embeddings, embedding_dim=args.embedding_dim,
                  n_down=args.n_down)
 
-
+# Run one batch through either model. Returns (loss, reconstruction, perplexity).
 def forward_and_loss(model, x, args):
-    """Run one batch through either model. Returns (loss, reconstruction, perplexity)."""
+
     if args.model == "vae":
         recon, mu, logvar = model(x)
         loss, _, _ = vae_loss(recon, x, mu, logvar, args.beta)
@@ -54,12 +50,9 @@ def forward_and_loss(model, x, args):
     loss, _ = vqvae_loss(recon, x, vq_loss)
     return loss, recon, perplexity
 
-
+# One pass over a loader. Trains if an optimiser is given, else evaluates.
 def run_epoch(model, loader, device, args, optimiser=None):
-    """One pass over a loader. Trains if an optimiser is given, else evaluates.
 
-    Returns (mean loss, mean SSIM, mean perplexity or None).
-    """
     training = optimiser is not None
     model.train(training)
     total_loss, total_ssim, total_perp, n, batches = 0.0, 0.0, 0.0, 0, 0
@@ -82,8 +75,9 @@ def run_epoch(model, loader, device, args, optimiser=None):
 
 
 @torch.no_grad()
+# Save test reconstructions, plus samples (VAE) or random-code decodes (VQ-VAE).
 def save_examples(model, loaders, device, args, out_dir):
-    """Save test reconstructions, plus samples (VAE) or random-code decodes (VQ-VAE)."""
+    """"""
     model.eval()
     x = next(iter(loaders["test"]))[:8].to(device)
     _, recon, _ = forward_and_loss(model, x, args)
@@ -93,8 +87,6 @@ def save_examples(model, loaders, device, args, out_dir):
         save_image_grid(model.sample(16, device), os.path.join(out_dir, "samples.png"),
                         title="VAE random samples")
     else:
-        # Without a learned prior, uniformly random codes decode to noise-like
-        # texture. This motivates training the PixelCNN prior.
         grid = model.encode_indices(x[:1]).shape[1:]
         codes = torch.randint(0, model.num_embeddings, (16, *grid), device=device)
         save_image_grid(model.decode_indices(codes),
@@ -103,14 +95,13 @@ def save_examples(model, loaders, device, args, out_dir):
 
 
 @torch.no_grad()
+# Encode every slice in a loader into its VQ-VAE code grid
 def extract_codes(vqvae, loader, device):
-    """Encode every slice in a loader into its VQ-VAE code grid (N, H', W')."""
     vqvae.eval()
     return torch.cat([vqvae.encode_indices(x.to(device)).cpu() for x in loader])
 
-
+# One pass of the prior. Returns mean cross-entropy loss
 def run_prior_epoch(prior, loader, device, optimiser=None):
-    """One pass of the prior. Returns mean cross-entropy loss (nats per code)."""
     training = optimiser is not None
     prior.train(training)
     total, n = 0.0, 0
@@ -126,9 +117,8 @@ def run_prior_epoch(prior, loader, device, optimiser=None):
             n += codes.size(0)
     return total / n
 
-
+# Train the PixelCNN prior on code grids from a frozen, trained VQ-VAE.
 def train_prior(args, device, out_dir):
-    """Train the PixelCNN prior on code grids from a frozen, trained VQ-VAE."""
     loaders = get_dataloaders(args.data_root, batch_size=args.batch_size)
     vqvae = VQVAE(num_embeddings=args.num_embeddings, embedding_dim=args.embedding_dim,
                   n_down=args.n_down).to(device)
