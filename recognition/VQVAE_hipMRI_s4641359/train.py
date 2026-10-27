@@ -14,8 +14,6 @@
 #   (12 epochs), and PixelCNN priors on both code grids.
 # - Chose the run settings and compared results between runs.
 
-
-
 import argparse
 import json
 import os
@@ -29,19 +27,31 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from dataset import get_dataloaders
 from modules import VAE, VQVAE, PixelCNNPrior, vae_loss, vqvae_loss
-from utils import count_params, plot_history, save_image_grid, ssim
+from utils import (count_params, load_checkpoint, plot_history, save_checkpoint,
+                   save_image_grid, ssim)
 
-# Create the model selected by --model.
+
+def model_hparams(args):
+    """Hyperparameters stored in each checkpoint so predict.py can rebuild the model."""
+    if args.model == "vae":
+        return {"model": "vae", "latent_dim": args.latent_dim}
+    if args.model == "vqvae":
+        return {"model": "vqvae", "num_embeddings": args.num_embeddings,
+                "embedding_dim": args.embedding_dim, "n_down": args.n_down}
+    return {"model": "prior", "num_embeddings": args.num_embeddings,
+            "channels": args.prior_channels, "n_blocks": args.prior_blocks}
+
+
 def build_model(args):
-
+    """Create the model selected by --model."""
     if args.model == "vae":
         return VAE(latent_dim=args.latent_dim)
     return VQVAE(num_embeddings=args.num_embeddings, embedding_dim=args.embedding_dim,
                  n_down=args.n_down)
 
-# Run one batch through either model. Returns (loss, reconstruction, perplexity).
-def forward_and_loss(model, x, args):
 
+def forward_and_loss(model, x, args):
+    """Run one batch through either model. Returns (loss, reconstruction, perplexity)."""
     if args.model == "vae":
         recon, mu, logvar = model(x)
         loss, _, _ = vae_loss(recon, x, mu, logvar, args.beta)
@@ -50,9 +60,12 @@ def forward_and_loss(model, x, args):
     loss, _ = vqvae_loss(recon, x, vq_loss)
     return loss, recon, perplexity
 
-# One pass over a loader. Trains if an optimiser is given, else evaluates.
-def run_epoch(model, loader, device, args, optimiser=None):
 
+def run_epoch(model, loader, device, args, optimiser=None):
+    """One pass over a loader. Trains if an optimiser is given, else evaluates.
+
+    Returns (mean loss, mean SSIM, mean perplexity or None).
+    """
     training = optimiser is not None
     model.train(training)
     total_loss, total_ssim, total_perp, n, batches = 0.0, 0.0, 0.0, 0, 0
@@ -75,9 +88,8 @@ def run_epoch(model, loader, device, args, optimiser=None):
 
 
 @torch.no_grad()
-# Save test reconstructions, plus samples (VAE) or random-code decodes (VQ-VAE).
 def save_examples(model, loaders, device, args, out_dir):
-    """"""
+    """Save test reconstructions, plus samples (VAE) or random-code decodes (VQ-VAE)."""
     model.eval()
     x = next(iter(loaders["test"]))[:8].to(device)
     _, recon, _ = forward_and_loss(model, x, args)
@@ -87,6 +99,8 @@ def save_examples(model, loaders, device, args, out_dir):
         save_image_grid(model.sample(16, device), os.path.join(out_dir, "samples.png"),
                         title="VAE random samples")
     else:
+        # Without a learned prior, uniformly random codes decode to noise-like
+        # texture. This motivates training the PixelCNN prior.
         grid = model.encode_indices(x[:1]).shape[1:]
         codes = torch.randint(0, model.num_embeddings, (16, *grid), device=device)
         save_image_grid(model.decode_indices(codes),
@@ -95,13 +109,14 @@ def save_examples(model, loaders, device, args, out_dir):
 
 
 @torch.no_grad()
-# Encode every slice in a loader into its VQ-VAE code grid
 def extract_codes(vqvae, loader, device):
+    """Encode every slice in a loader into its VQ-VAE code grid (N, H', W')."""
     vqvae.eval()
     return torch.cat([vqvae.encode_indices(x.to(device)).cpu() for x in loader])
 
-# One pass of the prior. Returns mean cross-entropy loss
+
 def run_prior_epoch(prior, loader, device, optimiser=None):
+    """One pass of the prior. Returns mean cross-entropy loss (nats per code)."""
     training = optimiser is not None
     prior.train(training)
     total, n = 0.0, 0
@@ -117,12 +132,17 @@ def run_prior_epoch(prior, loader, device, optimiser=None):
             n += codes.size(0)
     return total / n
 
-# Train the PixelCNN prior on code grids from a frozen, trained VQ-VAE.
+
 def train_prior(args, device, out_dir):
+    """Train the PixelCNN prior on code grids from a frozen, trained VQ-VAE."""
     loaders = get_dataloaders(args.data_root, batch_size=args.batch_size)
+    state, hp = load_checkpoint(args.vqvae_ckpt, device)
+    if hp:  # newer checkpoints carry their own settings; override the CLI flags
+        args.num_embeddings, args.embedding_dim, args.n_down = (
+            hp["num_embeddings"], hp["embedding_dim"], hp["n_down"])
     vqvae = VQVAE(num_embeddings=args.num_embeddings, embedding_dim=args.embedding_dim,
                   n_down=args.n_down).to(device)
-    vqvae.load_state_dict(torch.load(args.vqvae_ckpt, map_location=device))
+    vqvae.load_state_dict(state)
     vqvae.eval()
 
     codes = {split: extract_codes(vqvae, loader, device) for split, loader in loaders.items()}
@@ -151,10 +171,10 @@ def train_prior(args, device, out_dir):
               f"({val_loss / math.log(2):.3f} bits/code) | {epoch_times[-1]:.1f}s")
         if val_loss < best_val:
             best_val = val_loss
-            torch.save(prior.state_dict(), os.path.join(out_dir, "best.pt"))
+            save_checkpoint(prior, model_hparams(args), os.path.join(out_dir, "best.pt"))
 
     plot_history(history, os.path.join(out_dir, "training_curves.png"))
-    prior.load_state_dict(torch.load(os.path.join(out_dir, "best.pt"), map_location=device))
+    prior.load_state_dict(load_checkpoint(os.path.join(out_dir, "best.pt"), device)[0])
     test_loss = run_prior_epoch(prior, code_loaders["test"], device)
 
     # Uncurated samples: sample code grids from the prior and decode them.
@@ -253,12 +273,12 @@ def main():
 
         if val_ssim > best_ssim:
             best_ssim = val_ssim
-            torch.save(model.state_dict(), os.path.join(out_dir, "best.pt"))
+            save_checkpoint(model, model_hparams(args), os.path.join(out_dir, "best.pt"))
 
     plot_history(history, os.path.join(out_dir, "training_curves.png"))
 
     # Test with the best weights.
-    model.load_state_dict(torch.load(os.path.join(out_dir, "best.pt"), map_location=device))
+    model.load_state_dict(load_checkpoint(os.path.join(out_dir, "best.pt"), device)[0])
     test_loss, test_ssim, test_perp = run_epoch(model, loaders["test"], device, args)
     save_examples(model, loaders, device, args, out_dir)
 

@@ -13,10 +13,7 @@
 # - Copied the HipMRI data from Rangpur and ran the audit on it
 #   (11,460 / 660 / 540 slices; 31 / 4 / 3 patients; no overlap).
 # - Used the audit results in my feasibility review.
-
-
-Nifti loading follows Appendix B of the COMP3710 project specification.
-
+# Nifti loading follows Appendix B of the COMP3710 project specification.
 
 import argparse
 import os
