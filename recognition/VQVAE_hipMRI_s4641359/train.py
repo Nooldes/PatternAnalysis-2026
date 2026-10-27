@@ -39,7 +39,8 @@ def model_hparams(args):
         return {"model": "vqvae", "num_embeddings": args.num_embeddings,
                 "embedding_dim": args.embedding_dim, "n_down": args.n_down}
     return {"model": "prior", "num_embeddings": args.num_embeddings,
-            "channels": args.prior_channels, "n_blocks": args.prior_blocks}
+            "channels": args.prior_channels, "n_blocks": args.prior_blocks,
+            "pos": args.prior_pos}
 
 
 def build_model(args):
@@ -152,7 +153,8 @@ def train_prior(args, device, out_dir):
                                       shuffle=(split == "train"))
                     for split, c in codes.items()}
 
-    prior = PixelCNNPrior(args.num_embeddings, args.prior_channels, args.prior_blocks).to(device)
+    prior = PixelCNNPrior(args.num_embeddings, args.prior_channels, args.prior_blocks,
+                          use_pos=args.prior_pos).to(device)
     optimiser = torch.optim.Adam(prior.parameters(), lr=args.lr)
     print(f"Model: prior | trainable parameters: {count_params(prior):,}")
     if device.type == "cuda":
@@ -225,6 +227,8 @@ def main():
                         help="Trained VQ-VAE weights (required for --model prior)")
     parser.add_argument("--prior_channels", type=int, default=128)
     parser.add_argument("--prior_blocks", type=int, default=10)
+    parser.add_argument("--prior_pos", action="store_true",
+                        help="Add a learned row/column position embedding to the prior")
     parser.add_argument("--n_samples", type=int, default=16,
                         help="Prior samples to generate after training")
     parser.add_argument("--out_dir", default=None)
