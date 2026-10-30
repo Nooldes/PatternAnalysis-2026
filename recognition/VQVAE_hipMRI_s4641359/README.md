@@ -5,10 +5,10 @@
 ## 1. Overview
 
 ### Problem
-Medical imaging research is limited due to multiple reasons but mainly patient privacy laws and by the small amount of available scans. Generative models could produce synthetic scans that are shared or used for data augmentation in place of real patient data. However, a generative model for medical data faces three risks: (1) blurry or mode-collapsed samples that lack variety, (2) hallucinated anatomy that could teach downstream models incorrect features, and (3) memorisation of training scans, which would leak real patients’ data if it were shared. This project builds a VQ-VAE with a PixelCNN prior to generate synthetic 2D pelvic MRI slices from the HipMRI prostate cancer study, and evaluates it against all three risks for a research team considering sharing synthetic data.
+Medical imaging research is limited mainly by patient privacy laws and by the small number of available scans. Generative models could produce synthetic scans that are shared or used for data augmentation in place of real patient data. However, a generative model for medical data faces three risks: (1) blurry or mode-collapsed samples that lack variety, (2) hallucinated anatomy that could teach downstream models incorrect features, and (3) memorisation of training scans, which would leak real patients’ data if it were shared. This project builds a VQ-VAE with a PixelCNN prior to generate synthetic 2D pelvic MRI slices from the HipMRI prostate cancer study, and evaluates it against all three risks for a research team considering sharing synthetic data.
 
 ### How it works
-The VQ-VAE encoder compresses each 256 x 128 slice to a 64 x 32 grid of vectors. Each vector is replaced by its nearest entry in a codebook of 512 vectors, which turns the slice into a grid of discrete codes and a decoder reconstructs the slice from these codes. SInce the nearest code step is not differentiable, graidents are copied straight past it and the two extra loss terms pull the codebook and encoder outputs towards each other. To generate new slices, a PixelCNN prior is trained on the code grids of the training set: it predicts each code from the codes above and to its left, so new grids can be sampled one code at a time and decoded into new slices.
+The VQ-VAE encoder compresses each 256 x 128 slice to a 64 x 32 grid of vectors. Each vector is replaced by its nearest entry in a codebook of 512 vectors, which turns the slice into a grid of discrete codes and a decoder reconstructs the slice from these codes. Since the nearest-code step is not differentiable, gradients are copied straight past it and the two extra loss terms pull the codebook and encoder outputs towards each other. To generate new slices, a PixelCNN prior is trained on the code grids of the training set: it predicts each code from the codes above and to its left, so new grids can be sampled one code at a time and decoded into new slices.
 
 ![Architecture](figures/architecture.png) 
 *Figure 1: Two-stage pipeline. Stage 1 trains the VQ-VAE; stage 2 trains a PixelCNN prior on the code grids, then samples new grids and decodes them into new slices.*
@@ -23,7 +23,7 @@ The VQ-VAE encoder compresses each 256 x 128 slice to a 64 x 32 grid of vectors.
 
 > The one-page review below is included unchanged from the version checked off on 27 October 2026. Results since then are in Sections 5 and 6.
 
-*VQ-VAE for Synthetic Prostate MRI (HipMRI 2D) · Nooldes (s4641359) · 25 October 2026*
+*VQ-VAE for Synthetic Prostate MRI (HipMRI 2D) · Kenan Chu (s4641359) · 25 October 2026*
 
 
 #### 1. User need, scope and acceptance criteria
@@ -108,10 +108,10 @@ I kept the provided train/validate/test split, which is already split by patient
 ## 4. Method
 
 ### Baseline: convolutional VAE
-The baseline is a convolutional VAE that has four stride 2 convolutions which reduces a slice to a 16 x 8 feature map. The fully connected layers mapto the mean and variance of a Gaussian latent. A mirrored decoder of transposed convolutions reconstructs the slice. It is trained with summed MSE reconstruction loss plus the KL divergence (weight 1), and uses the latent mean at evaluation for deterministic reconstructions. This baseline can be used since it is the standard generative autoencoder and is trained and evaluated on identical data, splits and metrics. Additionally, most of its 13.45M parameters are in the fully connected layers.
+The baseline is a convolutional VAE that has four stride-2 convolutions, which reduce a slice to a 16 x 8 feature map. Fully connected layers map this to the mean and variance of a Gaussian latent. A mirrored decoder of transposed convolutions reconstructs the slice. It is trained with summed MSE reconstruction loss plus the KL divergence (weight 1), and uses the latent mean at evaluation for deterministic reconstructions. This is a fair baseline because it is the standard generative autoencoder and is trained and evaluated on identical data, splits and metrics. Most of its 13.45M parameters are in the fully connected layers.
 
 ### VQ-VAE
-This uses two stride 2 4 x 4 convolutions (64 then 128 channels) to downsample 256 x 128 slices to 64 x 32, followed by a 3 x 3 convolution and two residual blocks (3 x 3 then a 1 x 1 convolution) and a 1 x 1 convolution to 64 dimensional vectors. The decoder mirrors this with transposed convolutions and a sigmoid output. Each vector is quantised to its nearest codebook entry (K = 512, D = 64), and the loss is reconstruction MSE plus a codebook loss and a commitment loss weighted by β = 0.25. The vector quantiser is adapted from the COMP3710 VQ-VAE MNIST demo, with two additions: codebook perplexity tracking, and resetting rarely used (“dead”) codes to random encoder outputs every 200 steps, which prevents codebook collapse. 
+The encoder uses two stride-2 4 x 4 convolutions (64 then 128 channels) to downsample 256 x 128 slices to 64 x 32, followed by a 3 x 3 convolution and two residual blocks (3 x 3 then a 1 x 1 convolution) and a 1 x 1 convolution to 64 dimensional vectors. The decoder mirrors this with transposed convolutions and a sigmoid output. Each vector is quantised to its nearest codebook entry (K = 512, D = 64), and the loss is reconstruction MSE plus a codebook loss and a commitment loss weighted by β = 0.25. The vector quantiser is adapted from the COMP3710 VQ-VAE MNIST demo, with two additions: codebook perplexity tracking, and resetting rarely used (“dead”) codes to random encoder outputs every 200 steps, which prevents codebook collapse. 
 
 The design choices were based on the CNN principles from lecture 7: stride-2 convolutions downsample instead of pooling, channels increase as spatial size shrinks, and weight sharing keeps the model small (0.86M parameters). Keeping a spatial grid of codes, rather than a single vector, preserves local detail.
 
@@ -127,7 +127,7 @@ The prior models the distribution of code grids from the trained VQ-VAE. Each co
 | VQ-VAE (ablation) | 32x16 | 12 | 32 | 2e-4 | n_down 3 |
 | PixelCNN prior (final) | 64x32 | 10 (best 8) | 32 | 1e-3 | 64 ch, 60 blocks, position embedding, T = 1.0 |
 
-All models uses batch size 32 (to fit 4 GB of laptop VRAM) and seed 42, with the best checkpoint chosen on validation (SSIM for the autoencoders, cross-entropy for priors). K = 512, D = 64 and β = 0.25 are standard values from the VQ-VAE paper. The codebook perplexity of around 386 out of 512 indicates that the codebook is being used well and has no danger of collapse. The 64×32 grid (two downsampling steps) was chosen over 32×16 by experiment, since it reconstructs at SSIM 0.917 vs 0.778. The VQ-VAE uses a lower learning rate (2e-4) than the VAE and prior (1e-3) for stable codebook training. The final prior configuration (64 channels, 60 blocks, position embedding, T = 1.0) was chosen through the experiments in Section 6.
+All models use batch size 32 (to fit 4 GB of laptop VRAM) and seed 42, with the best checkpoint chosen on validation (SSIM for the autoencoders, cross-entropy for priors). K = 512, D = 64 and β = 0.25 are standard values from the VQ-VAE paper. The codebook perplexity of around 386 out of 512 indicates that the codebook is used well and shows no sign of collapse. The 64×32 grid (two downsampling steps) was chosen over 32×16 by experiment, since it reconstructs at SSIM 0.917 vs 0.778. The VQ-VAE uses a lower learning rate (2e-4) than the VAE and prior (1e-3) for stable codebook training. The final prior configuration (64 channels, 60 blocks, position embedding, T = 1.0) was chosen through the experiments in Section 6.
 
 ## 5. Results
 
@@ -184,7 +184,10 @@ The best slices contain large smooth regions with plenty of background and a bri
 | Real train slices (reference) | 77.4 | 0.02 | 0.225 | n/a |
 | VQ-VAE reconstructions of train (reference) | 108.8 | 0.01 | 0.250 | 0.908 / 0.949 |
 
-*300 uncurated slices per group; FID and FD computed against all 540 real test slices; prior temperature 1.0. See the sample comparison figure in Section 1.*
+*300 uncurated slices per group; FID and FD computed against all 540 real test slices; prior temperature 1.0.*
+
+![Baseline vs VQ-VAE samples](figures/baseline_vs_vqvae.png)
+*Uncurated samples from the VAE baseline and the VQ-VAE + PixelCNN prior, with real slices for reference.*
 
 300 uncurated samples from each model were compared against the 540 real test slices. The VQ-VAE's Inception FID is 44% lower than the VAE's (234.0 vs 420.7), meaning its samples are closer to the real distribution, although still well above real training slices (77.4). Even VQ-VAE reconstructions of real slices score 108.8, so part of the gap to real slices comes from the decoder itself, not the prior. Diversity, measured as the mean SSIM between pairs of samples within a set (lower means more varied), is 0.272 for the VQ-VAE, close to real slices (0.225), while VAE samples are about twice as similar to each other (0.519), reflecting their blurry, averaged appearance: mode-collapse-like behaviour. VAE samples also have a higher nearest-neighbour SSIM to the training set (0.436 vs 0.344), but this reflects blur towards an "average slice" rather than copying, so this metric must be read alongside diversity. Inception was trained on natural photographs, so absolute FID values are not directly meaningful for MRI; I therefore use it only to rank models evaluated the same way. This ranking agrees with the VQ-VAE-feature distance and the visual comparison, which supports it. Finally, the VQ-VAE-feature distance uses the VQ-VAE's own encoder, so it naturally favours VQ-VAE outputs.
 
@@ -272,7 +275,7 @@ To test whether the model learned a generalised representation of the anatomy or
 ### Failure autopsy
 ![Worst reconstructions, 32x16](figures/worst_cases_32x16.png)
 
-I examined four errors based on the drawn from the lowest-SSIM reconstructions, the closest and most distorted generated samples, and the prior and temperature experiments.
+I examined four failure types, drawn from the lowest-SSIM reconstructions, the closest and most distorted generated samples, and the prior and temperature experiments.
 
 1. **Fine texture in patient 042.** The worst reconstructions all come from patient 042, slices 36–41. The inputs have dense, bright, mottled texture, which the reconstruction smears into greyish regions. On the 32×16 model, SSIM drops to about 0.70, and the same region is 042's weakest on the 64×32 model too, suggesting the difficulty lies in this scan's content rather than one model. Each code represents an 8×8 (32×16) or 4×4 (64×32) pixel patch, so fine high-frequency texture cannot be represented exactly and is averaged out. This is a resolution limit of the codebook, which the 64×32 grid reduces.
 2. **Horizontal black bands.** The bands in steps 1 and 4 persisted even at full receptive field. Convolutions apply the same weights at every position, so the prior could not tell an edge row (where background belongs) from a central one. Once it generated a background code mid-image, the codes to its left made background the most likely next code, so it continued across the row and into the rows below. Adding the position embedding removed the bands, which confirmed the cause.
@@ -281,7 +284,7 @@ I examined four errors based on the drawn from the lowest-SSIM reconstructions, 
 
 ### Recommendation to the project manager
 
-**Overall, the synthetic cohort should not yet be used as training data for downstream models. The model is privacy-safe by this audit and clearly outperforms the baseline, but its samples are not yet anatomically reliable.** It fully meets four of the five acceptance criteria from the feasibility review. It reconstructs slices with SSIM 0.917, outperforms the VAE baseline (SSIM 0.917 vs 0.506; FID 234 vs 421), and the memorisation audit found no evidence of copying training patients: generated slices are less similar to the training set than unseen real slices, and the closest sample (0.478) is far below the ~0.91 that near-copies score. The unmet criterion is anatomical plausibility. Although the samples have a coherent overall layout, many contain ambiguous organs, smeared regions and no clear bone structure. It also avoids mode collapse: sample diversity (0.272) is close to real slices (0.225), unlike the VAE (0.519). In its current form, it could support work on the generation and sharing pipeline itself, but it should not be shared as a substitute for real data or used to train diagnostic models. Before use, I would replace the PixelCNN with a blind-spot-free prior, repeat the memorisation audit in feature space to catch shifted copies, evaluate on more test patients, and have a clinician review sample plausibility.
+**Overall, the synthetic cohort should not yet be used as training data for downstream models. The model is privacy-safe by this audit and clearly outperforms the baseline, but its samples are not yet anatomically reliable.** It fully meets four of the five acceptance criteria from the feasibility review. It reconstructs slices with SSIM 0.917, outperforms the VAE baseline (SSIM 0.917 vs 0.506; FID 234 vs 421), and the memorisation audit found no evidence of copying training patients: generated slices are less similar to the training set than unseen real slices, and the closest sample (0.478) is far below the ~0.91 that near-copies score. It also avoids mode collapse: sample diversity (0.272) is close to real slices (0.225), unlike the VAE (0.519). The unmet criterion is anatomical plausibility. Although the samples have a coherent overall layout, many contain ambiguous organs, smeared regions and no clear bone structure. In its current form, it could support work on the generation and sharing pipeline itself, but it should not be shared as a substitute for real data or used to train diagnostic models. Before use, I would replace the PixelCNN with a blind-spot-free prior, repeat the memorisation audit in feature space to catch shifted copies, evaluate on more test patients, and have a clinician review sample plausibility.
 
 ## 7. Limitations and Future Work
 
@@ -292,12 +295,13 @@ The main limitations concern the prior's architecture, the evaluation, and the d
 | **Prior** | Single-stack PixelCNN blind spot | Region above-right of each position is never seen, leaving smeared or ambiguous organs | Two-stack Gated PixelCNN | High |
 | **Prior** | Local bias of convolutions | Long-range structure (left–right symmetry, bones) is hard to model | Attention-based prior (PixelSNAIL or transformer) | High |
 | **Prior** | Errors compound over 2,048 sequential codes | One early mistake affects every later code | Hierarchical latents (VQ-VAE-2) so global structure is modelled first | Medium |
-| **Evaluation** | Audit uses pixel-level SSIM | Could miss shifted or deformed copies | Feature-space memorisation audit | High |
+| **Evaluation** | Audit uses pixel-level SSIM | Could miss shifted or edited copies: in the planted-copy check (Section 9), a small brightness change alone lowered a copy's SSIM from 1.0 to 0.80 | Feature-space memorisation audit | High |
 | **Evaluation** | Plausibility judged by eye | No expert confirmation of anatomy | Clinician review of samples | High |
 | **Data** | Test set 78% one patient; 4 validation patients | Metrics mostly reflect patient 040 | More test patients or patient-level cross-validation | Medium |
 | **Data** | 2D slices only | No consistency across neighbouring slices | 3D or slice-conditioned generation | Low |
+| **Reconstruction** | MSE loss only; small decoder | Fine texture is smoothed (failure 1) | L1 + SSIM loss; extra decoder convolution\* | Low |
 
-\* *Not attempted: both require retraining the VQ-VAE and prior and repeating all evaluation, and training directly on SSIM would inflate the reported SSIM.*
+\* *Considered but not attempted: both require retraining the VQ-VAE and prior and repeating all evaluation, and training directly on SSIM would inflate the reported SSIM.*
 
 Replacing the PixelCNN prior is the most direct route to more anatomically reliable samples, since the remaining problems are consistent with its blind spot and local bias. Before any use, the memorisation audit should also be repeated in feature space and the samples reviewed.
 
@@ -317,7 +321,7 @@ Developed locally on Windows 11 (RTX 2050, 4 GB). The final PixelCNN prior and `
 | scipy | 1.18.1 | `evaluate.py` (Fréchet distance) |
 | matplotlib | 3.11.2 | figures |
 | tqdm | 4.70.1 | progress bars |
-| scikit-image | 0.26.0 | `sanity_checks.py ssim` only |
+| scikit-image | 0.26.0 | `check.py ssim` only |
 | torchmetrics[image] | (Colab version) | `evaluate.py` Inception FID only (optional) |
 
 ```bash
@@ -343,7 +347,7 @@ python train.py --model vqvae --data_root <path> --epochs 12 --n_down 3
 # 3. Final PixelCNN prior (60 gated blocks, 64 channels, position embedding).
 #    Needs more than 4 GB of VRAM; trained on a Colab A100.
 python train.py --model prior --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
-    --prior_channels 64 --prior_blocks 60 --prior_pos --epochs <N>
+    --prior_channels 64 --prior_blocks 60 --prior_pos --epochs 10
 
 # 4. Reconstructions, per-slice and per-patient SSIM, best/worst cases, samples
 python predict.py --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
@@ -357,14 +361,14 @@ python audit.py --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
 python evaluate.py --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
     --prior_ckpt outputs/prior/best.pt --vae_ckpt outputs/vae/best.pt --n_samples 300
 
-# 7. Verification checks (Section 5.x)
-python sanity_checks.py shapes
-python sanity_checks.py causal
-python sanity_checks.py frechet
-python sanity_checks.py ssim
-python sanity_checks.py smoke
-python sanity_checks.py planted --data_root <path>
-python sanity_checks.py repro
+# 7. Verification checks (results in Section 9)
+python check.py shapes
+python check.py causal
+python check.py frechet
+python check.py ssim
+python check.py smoke
+python check.py planted --data_root <path>
+python check.py repro --train_json outputs/vqvae/results.json --predict_json outputs/predict/predict_results.json
 ```
 
 **Reproducibility notes**
@@ -383,25 +387,66 @@ python sanity_checks.py repro
 | `predict.py` | Inference: reconstructions, per-slice and per-patient SSIM, code maps, sampling |
 | `audit.py` | Memorisation audit: SSIM nearest neighbours, code overlap, nearest-neighbour patients |
 | `evaluate.py` | VAE vs VQ-VAE generation: FID, Fréchet distance, diversity, NN-SSIM, interpolation |
-| `sanity_checks.py` | Shape, causality, metric, smoke, planted-copy and reproducibility checks |
+| `check.py` | Shape, causality, metric, smoke, planted-copy and reproducibility checks |
 | `utils.py` | SSIM, checkpoint save/load, plotting helpers |
 | `figures/` | Images used in this README |
 
 ## 9. Artificial Intelligence Usage Disclosure
-Required (spec 6.1). Three parts:
-**Tools:** Claude (Anthropic), used conversationally throughout.
-**What AI did:** generated most of the code (list per file; each file also has
-a header), explained concepts.
-**What I did:** chose the problem/model/baseline; ran all training (laptop +
-Colab); diagnosed issues and proposed changes (temperature hypothesis,
-position/receptive-field reasoning, L1+SSIM and decoder-conv ideas); designed
-the audit steps, interpreted all results, wrote this README.
-**How I verified:** insert at the end
 
-## 10. References
+**Tool:** Claude (Anthropic), used conversationally throughout the project. No other AI tools were used.
+
+### What the AI did
+
+| Item | AI contribution |
+|---|---|
+| `dataset.py`, `modules.py`, `train.py`, `utils.py` | Generated the code. The vector quantiser follows the COMP3710 VQ-VAE MNIST demo; Claude added perplexity tracking and dead-code resets. |
+| `predict.py` | Generated the code from features I asked for (best and worst 5 slices, per-patient SSIM, temperature sampling). |
+| `audit.py` | Generated the code from the audit steps I specified (nearest-neighbour SSIM, code overlap, patient analysis, test baseline). |
+| `evaluate.py` | Generated the code for the baseline vs VQ-VAE comparison and the interpolation. |
+| `check.py` | Proposed the seven verification checks after I asked how to verify the pipeline, and wrote the code. |
+| Debugging | Diagnosed errors I hit (VAE KL explosion, a removed SciPy argument, Colab path problems, a Windows encoding crash) and suggested fixes. |
+| Prior fixes | When the 60-block samples looked worse despite a better likelihood, explained the receptive-field limit and suggested the position embedding. |
+| Concepts | Explained VQ-VAE, PixelCNN masking and the blind spot, SSIM, FID and memorisation auditing as I worked. |
+| Writing | Drafted the feasibility review from my results; drafted Section 8, the Section 9 verification table and the Section 10 references; reviewed my drafts of the other sections, corrected technical errors and fixed typos and wording. |
+
+Each code file starts with a header stating its AI use.
+
+### What I did
+
+- Chose the task (VQ-VAE, Hard), the user and dilemma framing, and the VAE baseline.
+- Set up and ran all data audits, training and evaluation on my laptop (RTX 2050) and Google Colab (A100), after the Rangpur queue proved too slow.
+- Inspected the samples after every run and decided what to try next: the coarser 32×16 grid, a deeper and thinner prior, scaling to 60 blocks, then testing the position embedding on 32×16 before the final 64×32 model.
+- Proposed and tested the sampling-temperature hypothesis, and rejected it when the samples got worse.
+- Specified what the memorisation audit should measure and how its baseline should work, and chose to report the best and worst cases and per-patient results.
+- Interpreted all results, including the patient-hub analysis, the failure autopsy and the recommendation.
+- Wrote Sections 1 and 3–7 in my own words, then revised them after Claude's review.
+
+### How I verified
+
+I could not have written the checks in `check.py` myself, so I treated them as a second line of evidence. Most of my verification was hands-on:
+
+- I inspected samples after every change, and rejected the 60-block prior even though it had the best likelihood, because its samples were visibly worse (Section 6, step 4).
+- I tested my own temperature hypothesis and rejected it on the evidence (step 7).
+- I confirmed that `predict.py` reproduced the training test SSIM (0.9174) on two different GPUs.
+- I compared the audit's closest sample (sample 83) with its nearest training slice by eye: a different bladder size and brightness, not a copy.
+- I checked that the most frequent nearest-neighbour patients had normal slice counts before attributing the skew to the model.
+- I confirmed the patient split from the data audit and noticed that patient 040 makes up 78% of the test set.
+
+The automated checks in `check.py` were proposed and written by Claude; I ran all seven on my laptop and interpreted the results:
+
+| Check | What it tests | Result |
+|---|---|---|
+| shapes | Every model maps a 1×256×128 slice back to 1×256×128, with the expected latent and code-grid sizes | PASS: VAE latent 256-d; VQ-VAE code grids 64×32 (`n_down` 2) and 32×16 (`n_down` 3) with valid indices 0–511; prior outputs 512 logits per position |
+| causal | Changing one code (row 20, column 10) never changes predictions above or to its left | PASS: change above and at/left exactly 0, with and without the position embedding; positions to the right do change (0.107 / 0.066), so the code is used. Measured receptive field 9 rows for 6 blocks, matching 3 + N |
+| frechet | My Fréchet distance against SciPy's formula | PASS: 33.3742 vs 33.3742; two sets from the same distribution give 0.145 (near 0) |
+| ssim | My SSIM against scikit-image's | PASS: identical images give 1; differences of 0.0003, 0.0031 and 0.0124 at high, medium and low similarity, caused by edge handling (zero-padding vs skipped border) |
+| smoke | Every script runs end to end on a small fake Nifti dataset | First run FAILED: `evaluate.py` crashed on Windows printing its table (cp1252 cannot encode "↓"), which my Colab runs had not shown. After forcing UTF-8 output, all scripts PASS and all 10 expected output files are created |
+| planted | The memorisation audit finds training slices hidden among its queries | Exact copy: correct slice found, SSIM 1.000. Random noise: 0.016. Altered copy (0.9× contrast, +0.05 brightness): **correct slice found**, but SSIM was 0.805, so it failed the check's 0.9 threshold. The brightness shift lowers SSIM sharply in the dark background. 0.805 is still far above the generated (0.447) and unseen-patient (0.443) maxima, so such a copy would be flagged, but it shows pixel SSIM understates edited copies (Section 7) |
+| repro | `predict.py` reproduces the test SSIM saved by `train.py` from the saved checkpoint | PASS for both models: 64×32 0.9174 vs 0.9174; 32×16 0.7775 vs 0.7775 |
+
 ## 10. References
 1. A. van den Oord, O. Vinyals and K. Kavukcuoglu, "Neural Discrete Representation Learning," NeurIPS, 2017. arXiv:1711.00937
 2. A. van den Oord, N. Kalchbrenner and K. Kavukcuoglu, "Pixel Recurrent Neural Networks," ICML, 2016. arXiv:1601.06759
 3. A. van den Oord et al., "Conditional Image Generation with PixelCNN Decoders," NeurIPS, 2016. arXiv:1606.05328
-11. J. Dowling and P. Greer, "Labelled weekly MR images of the male pelvis," CSIRO Data Collection, 2021. doi:10.25919/45t8-p065
-12. COMP3710 course materials, University of Queensland, 2026: VQ-VAE MNIST demo and Lecture 7 (CNNs).
+4. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," IEEE Trans. Image Processing, 13(4), 600–612, 2004.
+5. COMP3710 course materials, University of Queensland, 2026: VQ-VAE MNIST demo and Lecture 7 (CNNs).
