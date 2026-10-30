@@ -3,13 +3,15 @@
 # Tool: Claude (Anthropic), used conversationally over several requests.
 #
 # What the AI did in this file:
-# - Wrote the SSIM metric (from the Wang et al., 2004 formula), parameter
-#   counting, training-curve and image-grid plotting.
+# - Wrote the SSIM metric, parameter counting, training-curve and image-grid plotting.
 # - At my request, added saving hyperparameters inside checkpoints so
 #   models can be reloaded with the settings they were trained with.
 #
 # What I did:
-# - Used these helpers through train.py and predict.py.
+# - Used these helpers through train.py, predict.py, audit.py and
+#   evaluate.py, and asked for the checkpoint change after reloading a
+#   model with the wrong settings caused errors.
+
 
 import os
 

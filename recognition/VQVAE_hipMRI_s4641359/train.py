@@ -7,12 +7,16 @@
 #   with SSIM, codebook perplexity, peak VRAM and timing logged.
 # - Added PixelCNN prior training on code grids from a trained VQ-VAE,
 #   followed by sampling new slices.
+# - After I suggested, added command-line options for prior width, depth and the position
+#   embedding, and read the VQ-VAE's settings from its checkpoint.
 #
 # What I did:
-# - Ran all training runs on my laptop GPU: VAE baseline (20 epochs),
-#   VQ-VAE with 64x32 codes (15 epochs), VQ-VAE with 32x16 codes
-#   (12 epochs), and PixelCNN priors on both code grids.
-# - Chose the run settings and compared results between runs.
+# - Ran all training on my laptop GPU (VAE 20 epochs, VQ-VAE 64x32
+#   15 epochs, VQ-VAE 32x16 12 epochs, and the 32x16 priors) and the
+#   final 60-block prior on a Google Colab A100.
+# - Chose the run settings, compared results between runs, and set up
+#   the Rangpur and Colab environments.
+
 
 import argparse
 import json

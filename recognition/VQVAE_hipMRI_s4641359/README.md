@@ -10,6 +10,9 @@ Medical imaging research is limited due to multiple reasons but mainly patient p
 ### How it works
 The VQ-VAE encoder compresses each 256 x 128 slice to a 64 x 32 grid of vectors. Each vector is replaced by its nearest entry in a codebook of 512 vectors, which turns the slice into a grid of discrete codes and a decoder reconstructs the slice from these codes. SInce the nearest code step is not differentiable, graidents are copied straight past it and the two extra loss terms pull the codebook and encoder outputs towards each other. To generate new slices, a PixelCNN prior is trained on the code grids of the training set: it predicts each code from the codes above and to its left, so new grids can be sampled one code at a time and decoded into new slices.
 
+![Architecture](figures/architecture.png) 
+*Figure 1: Two-stage pipeline. Stage 1 trains the VQ-VAE; stage 2 trains a PixelCNN prior on the code grids, then samples new grids and decodes them into new slices.*
+
 ### Key results
 - Reconstruction: test SSIM 0.917 vs 0.506 for a VAE baseline, with 16× fewer parameters.
 - Generation: Inception FID 234 vs 421 for the VAE, and sample diversity (0.272) close to real slices (0.225).
@@ -18,10 +21,71 @@ The VQ-VAE encoder compresses each 256 x 128 slice to a 64 x 32 grid of vectors.
 
 ## 2. Feasibility Review
 
-Since this review: the grid-size and prior experiments, position embedding, memorisation audit and generative evaluation were completed (Section 6).
+> The one-page review below is included unchanged from the version checked off on 27 October 2026. Results since then are in Sections 5 and 6.
+
+*VQ-VAE for Synthetic Prostate MRI (HipMRI 2D) · Nooldes (s4641359) · 25 October 2026*
 
 
+#### 1. User need, scope and acceptance criteria
 
+**User:** a data manager in a prostate radiotherapy research group who wants to share or augment HipMRI pelvic MRI slices without exposing real patients' scans.
+
+**Prototype purpose:** generate novel synthetic 2D pelvic MRI slices with a VQ-VAE, then test the domain dilemma: are the samples realistic, or blurry, hallucinated, or memorised copies of training patients?
+
+**Acceptance criteria:**
+
+1. **Fidelity:** mean SSIM > 0.6 between VQ-VAE reconstructions and held-out test slices.
+2. **Beats baseline:** VQ-VAE achieves higher SSIM and lower FID than a convolutional VAE baseline on the same test split.
+3. **No memorisation:** for 100 uncurated generated samples, the nearest-training-neighbour distance is not smaller than that of real test slices to the training set.
+4. **Plausibility:** an uncurated 8×8 sample grid shows recognisable pelvic anatomy; 3–5 failure cases are diagnosed.
+5. **Resources:** peak training VRAM ≤ 8 GB, VQ-VAE + prior training ≤ 2 h on one GPU, 100 samples generated in < 5 min.
+
+#### 2. Model choice and course concepts
+
+**Difficulty:** Hard (VQ-VAE, Section 2.4).
+
+**Dataset:** HipMRI 2D slices (`/home/groups/comp3710/HipMRI_Study_open/keras_slices_data`), using the provided train / validate / test folders. Case IDs in filenames confirm no patient appears in two splits. Slices are loaded with nibabel (Appendix B) and min-max scaled to \[0, 1\].
+
+**Main model: VQ-VAE** (van den Oord et al., 2017):
+
+- CNN encoder (4× downsampling) → codebook of K = 512 vectors (D = 64) → CNN decoder.
+- Loss = reconstruction + codebook loss + β·commitment loss (β = 0.25), with a straight-through gradient past quantisation.
+- A small gated PixelCNN prior over the code grid is trained afterwards to sample new images.
+
+**Baseline:** a convolutional VAE of similar encoder/decoder size, trained and evaluated on the same splits.
+
+**Why this choice:** discrete latents avoid the blurry outputs of a Gaussian VAE, and the 2D slices are small enough to train in under an hour. The codebook lookup is nearest-neighbour vector quantisation (k-means style), linking to course content on autoencoders, latent representations, CNNs, clustering, and SSIM.
+
+#### 3. Preliminary feasibility evidence
+
+All runs on a laptop RTX 2050 (4 GB), 26 Oct.
+
+**Data audit:** 11,460 / 660 / 540 slices from 31 / 4 / 3 patients (train / validate / test), with no patient overlap. Slices are 256×128 (60 train slices at 256×144 are resized). Raw intensities vary by scan (max 592–1212), so each slice is scaled to \[0, 1\].
+
+| Run | Test SSIM | Params | Peak VRAM | Time/epoch |
+| --- | --- | --- | --- | --- |
+| VAE baseline, 20 epochs | 0.506 | 13.45 M | 0.47 GB | 48 s |
+| VQ-VAE, 15 epochs (64×32 codes) | **0.917** | 0.86 M | 0.67 GB | 113 s |
+| PixelCNN prior, 3 epochs | 5.1 bits/code (vs 9 uniform) | 4.07 M | 1.80 GB | 420 s |
+
+**Takeaway:** the VQ-VAE already meets the fidelity target and beats the baseline with 16× fewer parameters; codebook perplexity of about 390 of 512 shows no collapse. The VAE plateaus near SSIM 0.46 on validation from epoch 10. Early prior samples have realistic local tissue texture but no coherent global anatomy (horizontal streaks, no body outline): a known limit of a single-stack PixelCNN on a large 64×32 code grid.
+
+#### 4. Risks, budget and fallback
+
+| Risk | Mitigation |
+| --- | --- |
+| Codebook collapse (few codes used) | Track perplexity; reset dead codes. Observed: perplexity about 390 of 512 |
+| PixelCNN samples incoherent (observed) | Smaller 32×16 code grid; train longer; two-stack Gated PixelCNN to remove the blind spot; lower sampling temperature |
+| Rangpur queue delays (observed: about 14 h estimated wait) | Develop and train on laptop GPU; Rangpur or Colab only for long runs |
+| Short timeline (due 30 Oct) | Baseline first, then VQ-VAE, then prior; commit at each milestone |
+
+**Compute budget:** a laptop RTX 2050 (4 GB) for development and runs of about 20 min; Rangpur `comp3710` A100 (queue wait of hours this week) or Colab for longer runs. Estimated about 20 min VAE baseline, 1 h VQ-VAE, 1 h PixelCNN prior.
+
+**Next experiment:** retrain the VQ-VAE with a larger grid and train the prior for 15 epochs, testing whether a smaller grid gives more coherent anatomy at a small cost in reconstruction SSIM. Then run the memorisation audit (nearest training neighbours) and failure analysis.
+
+**Fallback:** if the PixelCNN prior fails, deliver the VQ-VAE with reconstruction SSIM, latent interpolation, and the memorisation audit on decoded codes. If the VQ-VAE fails, the VAE baseline becomes the working deliverable.
+
+**Since this review:** I tested the smaller 32×16 grid (fewer streaks but blurrier, SSIM fell to 0.778), so I kept 64×32. A 60-block prior with a learned position embedding removed the horizontal bands. I then ran the temperature sweep, the memorisation audit and the VAE vs VQ-VAE evaluation (Sections 5 and 6).
 
 ## 3. Data and Pre-processing
 
@@ -63,7 +127,7 @@ The prior models the distribution of code grids from the trained VQ-VAE. Each co
 | VQ-VAE (ablation) | 32x16 | 12 | 32 | 2e-4 | n_down 3 |
 | PixelCNN prior (final) | 64x32 | 10 (best 8) | 32 | 1e-3 | 64 ch, 60 blocks, position embedding, T = 1.0 |
 
-All models use Adam, batch size 32 (to fit 4 GB of laptop VRAM) and seed 42, with the best checkpoint chosen on validation (SSIM for the autoencoders, cross-entropy for priors). K = 512, D = 64 and β = 0.25 are standard values from the VQ-VAE paper. The codebook perplexity of around 386 out of 512 indicates that the codebook is being used well and has no danger of collapse. The 64×32 grid (two downsampling steps) was chosen over 32×16 by experiment, since it reconstructs at SSIM 0.917 vs 0.778. The VQ-VAE uses a lower learning rate (2e-4) than the VAE and prior (1e-3) for stable codebook training. The final prior configuration (64 channels, 60 blocks, position embedding, T = 1.0) was chosen through the experiments in Section 6.
+All models uses batch size 32 (to fit 4 GB of laptop VRAM) and seed 42, with the best checkpoint chosen on validation (SSIM for the autoencoders, cross-entropy for priors). K = 512, D = 64 and β = 0.25 are standard values from the VQ-VAE paper. The codebook perplexity of around 386 out of 512 indicates that the codebook is being used well and has no danger of collapse. The 64×32 grid (two downsampling steps) was chosen over 32×16 by experiment, since it reconstructs at SSIM 0.917 vs 0.778. The VQ-VAE uses a lower learning rate (2e-4) than the VAE and prior (1e-3) for stable codebook training. The final prior configuration (64 channels, 60 blocks, position embedding, T = 1.0) was chosen through the experiments in Section 6.
 
 ## 5. Results
 
@@ -242,30 +306,85 @@ Replacing the PixelCNN prior is the most direct route to more anatomically relia
 
 ### Dependencies
 
-| Package | Version |
-|---|---|
-| Python | |
-| torch | |
-| nibabel | |
-| numpy | |
-| scipy | |
-| matplotlib | |
-| tqdm | |
-| torchmetrics[image] (evaluate.py only) | |
+Developed locally on Windows 11 (RTX 2050, 4 GB). The final PixelCNN prior and `evaluate.py` were run on Google Colab (A100).
+
+| Package | Version | Used by |
+|---|---|---|
+| Python | 3.14.4 | all |
+| torch | 2.14.1 (CUDA 13.2) | all |
+| nibabel | 5.4.2 | `dataset.py` |
+| numpy | 2.5.2 | all |
+| scipy | 1.18.1 | `evaluate.py` (Fréchet distance) |
+| matplotlib | 3.11.2 | figures |
+| tqdm | 4.70.1 | progress bars |
+| scikit-image | 0.26.0 | `sanity_checks.py ssim` only |
+| torchmetrics[image] | (Colab version) | `evaluate.py` Inception FID only (optional) |
+
+```bash
+pip install torch nibabel numpy scipy matplotlib tqdm scikit-image
+pip install "torchmetrics[image]"   # optional, for Inception FID
+```
 
 ### Reproducing the results
+
+`<path>` is the folder containing `keras_slices_train`, `keras_slices_validate` and `keras_slices_test`.
+
+```bash
+# 1. Data audit (slice counts, shapes, patient overlap)
+python dataset.py --data_root <path>
+
+# 2. VAE baseline and VQ-VAE (64x32 code grid)
+python train.py --model vae   --data_root <path> --epochs 20
+python train.py --model vqvae --data_root <path> --epochs 15
+
+# 2b. Optional: coarser 32x16 VQ-VAE used in Section 6
+python train.py --model vqvae --data_root <path> --epochs 12 --n_down 3
+
+# 3. Final PixelCNN prior (60 gated blocks, 64 channels, position embedding).
+#    Needs more than 4 GB of VRAM; trained on a Colab A100.
+python train.py --model prior --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
+    --prior_channels 64 --prior_blocks 60 --prior_pos --epochs <N>
+
+# 4. Reconstructions, per-slice and per-patient SSIM, best/worst cases, samples
+python predict.py --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
+    --prior_ckpt outputs/prior/best.pt --n_samples 100 --temperature 1.0
+
+# 5. Memorisation audit (nearest-neighbour SSIM, code overlap, patients)
+python audit.py --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
+    --prior_ckpt outputs/prior/best.pt --n_samples 100 --n_test 100
+
+# 6. Baseline vs VQ-VAE generation metrics and latent interpolation
+python evaluate.py --data_root <path> --vqvae_ckpt outputs/vqvae/best.pt \
+    --prior_ckpt outputs/prior/best.pt --vae_ckpt outputs/vae/best.pt --n_samples 300
+
+# 7. Verification checks (Section 5.x)
+python sanity_checks.py shapes
+python sanity_checks.py causal
+python sanity_checks.py frechet
+python sanity_checks.py ssim
+python sanity_checks.py smoke
+python sanity_checks.py planted --data_root <path>
+python sanity_checks.py repro
+```
+
+**Reproducibility notes**
+- All scripts use a fixed seed (`--seed 42`).
+- Each checkpoint stores its hyperparameters (code-grid size, prior width/depth, position embedding), so `predict.py`, `audit.py` and `evaluate.py` rebuild the right architecture without extra flags.
+- The VQ-VAE reached the same test SSIM (0.9174) on the RTX 2050 and the A100. GPU nondeterminism can still shift other numbers slightly between runs.
+- Checkpoints and the dataset are not committed (size and data licence). Run the commands above to regenerate them.
 
 ### Project structure
 
 | File | Purpose |
 |---|---|
-| `dataset.py` | Nifti loading, scaling, splits, data audit |
-| `modules.py` | VAE, VQ-VAE, PixelCNN prior (with optional position embedding) |
-| `train.py` | Training / validation / testing for all three models |
-| `predict.py` | Inference, reconstruction figures, per-slice / per-patient SSIM, sampling |
-| `audit.py` | Memorisation audit: SSIM nearest neighbours, code overlap, patients |
-| `evaluate.py` | Baseline vs VQ-VAE generation: FID, diversity, NN-SSIM, interpolation |
-| `utils.py` | SSIM, checkpoints, plotting |
+| `dataset.py` | Nifti loading, min-max scaling, patient-level splits, data audit |
+| `modules.py` | VAE, VQ-VAE (encoder, vector quantiser, decoder) and gated PixelCNN prior |
+| `train.py` | Training, validation and testing for `vae`, `vqvae` and `prior` |
+| `predict.py` | Inference: reconstructions, per-slice and per-patient SSIM, code maps, sampling |
+| `audit.py` | Memorisation audit: SSIM nearest neighbours, code overlap, nearest-neighbour patients |
+| `evaluate.py` | VAE vs VQ-VAE generation: FID, Fréchet distance, diversity, NN-SSIM, interpolation |
+| `sanity_checks.py` | Shape, causality, metric, smoke, planted-copy and reproducibility checks |
+| `utils.py` | SSIM, checkpoint save/load, plotting helpers |
 | `figures/` | Images used in this README |
 
 ## 9. Artificial Intelligence Usage Disclosure
@@ -280,4 +399,9 @@ the audit steps, interpreted all results, wrote this README.
 **How I verified:** insert at the end
 
 ## 10. References
-insert here at the end.
+## 10. References
+1. A. van den Oord, O. Vinyals and K. Kavukcuoglu, "Neural Discrete Representation Learning," NeurIPS, 2017. arXiv:1711.00937
+2. A. van den Oord, N. Kalchbrenner and K. Kavukcuoglu, "Pixel Recurrent Neural Networks," ICML, 2016. arXiv:1601.06759
+3. A. van den Oord et al., "Conditional Image Generation with PixelCNN Decoders," NeurIPS, 2016. arXiv:1606.05328
+11. J. Dowling and P. Greer, "Labelled weekly MR images of the male pelvis," CSIRO Data Collection, 2021. doi:10.25919/45t8-p065
+12. COMP3710 course materials, University of Queensland, 2026: VQ-VAE MNIST demo and Lecture 7 (CNNs).

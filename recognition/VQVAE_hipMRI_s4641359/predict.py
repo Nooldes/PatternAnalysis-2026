@@ -1,6 +1,6 @@
 # AI Declaration
 #
-# Tool: Claude (Anthropic), used conversationally over several prompts.
+# Tool: Claude (Anthropic), used conversationally over several requests.
 #
 # What the AI did in this file:
 # - Wrote the initial script: loading the trained VQ-VAE and PixelCNN
@@ -9,16 +9,18 @@
 # - Added prior sampling with an adjustable temperature.
 # - At my request, extended it to compute SSIM for every test slice,
 #   save the scores to CSV, plot their distribution, and show the
-#   lowest- and highest-SSIM slices with error maps.
+#   five lowest- and highest-SSIM slices with error maps.
 # - At my request, added a per-patient SSIM summary and a plot of SSIM
 #   against slice position, to check whether failures cluster in
 #   particular patients or parts of the scan.
 #
 # What I did:
 # - Decided which analyses the report needed and requested each one.
-# - Read through the code to understand each function before using it.
-# - Ran it on my main VQ-VAE (64x32 codes, outputs/vqvae_final_15ep) and
-#   the 32x16 VQ-VAE with its PixelCNN prior (outputs/vqvae_d3, prior_d3).
+# - Ran it on my trained models on both my laptop and Colab, and
+#   checked that it reproduced the test SSIM from training (0.9174).
+# - Ran the temperature sweep (T = 1.0, 0.8, 0.7) to test my hypothesis
+#   that rare codes caused the smeared regions.
+
 
 import argparse
 import json

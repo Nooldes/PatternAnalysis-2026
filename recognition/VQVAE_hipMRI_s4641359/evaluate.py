@@ -3,14 +3,18 @@
 # Tool: Claude (Anthropic), used conversationally over several requests.
 #
 # What the AI did in this file:
-# - Wrote this generative evaluation after we checked the spec and found
-#   it asks for: a baseline comparison on sample clarity, diversity and
-#   fidelity; a distribution-fidelity metric (FID); and latent-space
-#   interpolation between synthetic images and training scans.
+# - After I suggested, it wrote this generative evaluation after we checked the
+#   spec and found it asks for: a baseline comparison on sample clarity,
+#   diversity and fidelity; a distribution-fidelity metric (FID); and
+#   latent-space interpolation between synthetic images and training scans.
 #
 # What I did:
-# - Chose to cover these remaining spec requirements before writing up,
+# - Agreed to cover these remaining spec requirements before writing up,
 #   and selected the models and checkpoints compared.
+# - Ran it on Colab and interpreted the results, including the limits of
+#   Inception FID for MRI and why the VAE's higher NN-SSIM reflects blur
+#   rather than copying.
+
 
 import argparse
 import json

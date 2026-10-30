@@ -8,12 +8,18 @@
 #   PyTorch Dataset and DataLoaders for the provided splits.
 # - Wrote the data audit (slice counts, shapes, intensity range) and the
 #   patient-overlap check based on case IDs in the filenames.
+# - Added an optional intensity-jitter augmentation (not used in the
+#   final runs).
 #
 # What I did:
+# - Audited and verified the code
 # - Copied the HipMRI data from Rangpur and ran the audit on it
 #   (11,460 / 660 / 540 slices; 31 / 4 / 3 patients; no overlap).
-# - Used the audit results in my feasibility review.
-# Nifti loading follows Appendix B of the COMP3710 project specification.
+# - Decided to keep the provided patient-level split and not to use
+#   flips or rotations, which would create anatomically wrong slices.
+# - Noticed that patient 040 makes up most of the test set and used the
+#   audit results in my feasibility review and README.
+
 
 import argparse
 import os

@@ -8,10 +8,16 @@
 #   patient ID, latent code overlap, a real test-slice baseline, the
 #   similarity histogram, and the top-3 closest cases with difference maps).
 # - Added a reconstructed-test baseline and the maximum code overlap over
-#   all training slices, so the comparison is not biased by decoder smoothing.
+#   all training slices, so the comparison is not biased by decoder
+#   smoothing, and a plot of which training patients are matched.
 #
 # What I did:
-# - Designed the audit steps listed above and chose the comparisons.
+# - Specified the audit steps listed above and chose the comparisons.
+# - Ran it on Colab, inspected the closest sample (83) against its
+#   training neighbour by eye, and analysed the patient distribution
+#   (checking slice counts before attributing the skew to the model).
+# - 
+
 
 import argparse
 import json

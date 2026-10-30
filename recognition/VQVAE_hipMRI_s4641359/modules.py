@@ -3,19 +3,25 @@
 # Tool: Claude (Anthropic), used conversationally over several requests.
 #
 # What the AI did in this file:
-# - Wrote the convolutional VAE baseline and its loss.
+# - Wrote the convolutional VAE baseline and its loss, and later clamped
+#   the log-variance after my first VAE run showed an exploding KL term.
 # - Adapted the VectorQuantizer from the COMP3710 VQ-VAE MNIST demo and
 #   extended it with perplexity tracking and dead-code resets.
-# - Wrote the residual VQ-VAE encoder/decoder, following the VQ-VAE paper.
-# - Wrote the PixelCNN prior (masked and gated convolutions) and its
-#   sampling loop.
-# - At my request, made the downsampling depth configurable (n_down) so
-#   different code-grid sizes could be compared.
+# - Wrote the residual VQ-VAE encoder/decoder, following the VQ-VAE paper,
+#   and made the downsampling depth configurable (n_down).
+# - Wrote the gated PixelCNN prior (mask-A and mask-B convolutions) and
+#   its sampling loop with temperature.
+# - After I reported horizontal bands in the deep prior's samples,
+#   suggested and added the optional learned row/column position embedding.
 #
 # What I did:
 # - Chose the VQ-VAE + PixelCNN approach and the VAE baseline.
-# - Trained each model and compared code-grid sizes (64x32 vs 32x16)
-#   after the first prior samples showed incoherent global structure.
+# - Trained every model, inspected the samples after each change, and
+#   decided which configuration to try next (grid size, depth, width,
+#   position embedding) based on what the samples showed.
+# - Tested the position embedding on the smaller 32x16 prior first before
+#   using it in the final 64x32 model.
+#
 
 
 import torch
