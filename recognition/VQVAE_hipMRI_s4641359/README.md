@@ -18,10 +18,10 @@
 ## 3. Data and Pre-processing
 
 ### Dataset
-
+This project uses the 2D slices from the HipMRI prostate cancer study provided for the course (`keras_slices_data` on Rangpur). Each slice is a 256×128 greyscale pelvic MRI stored in Nifti format and loaded with nibabel. Each filename contains the patient's case number, scan week and slice number. I used only the image slices; the segmentation masks were not needed for this task.
 
 ### Pre-processing
-
+Raw intensities vary between scans (maximum raw intensities differ between splits, from 592 to 1212), so a single global scale would make some scans darker than others. Each slice was therefore min-max scaled to [0, 1] individually. 60 training slices were stored at 256×144 and were resized to 256×128 with bilinear interpolation so that all slices share one shape. No data augmentation was used: flips or rotations would show the model incorrect anatomical layouts (such as mirrored organ positions), which would harm the plausibility of generated anatomy. An intensity-jitter option is implemented in `dataset.py` but was not enabled, since per-slice normalisation already removes scan-to-scan intensity differences, the main variation that intensity jitter would simulate.
 
 ### Splits and justification
 
@@ -31,6 +31,7 @@
 | Validate | 660 | 4 |
 | Test | 540 | 3 |
 
+I kept the provided train/validate/test split, which is already split by patient. Splitting by slice instead would let near-duplicates of training slices (neighbouring slices and repeated weekly scans of the same patient) appear in the test set, inflating test scores. The split was verified with the data audit in `dataset.py`, which extracts case IDs from the filenames and found no patient in more than one split. However, the test set is unbalanced: patient 040 has seven weekly scans, making up 420 of the 540 test slices, so test metrics mostly reflect one patient. This is why per-patient results are reported in Section 5.
 
 ## 4. Method
 
@@ -57,7 +58,11 @@
 ## 5. Results
 
 ### Training
+![VAE training curves](figures/vae_training_curves.png)
+![VQ-VAE training curves](figures/vqvae_training_curves.png)
+*Training and validation loss (left) and validation SSIM (right) for the VAE baseline (top) and the VQ-VAE (bottom).*
 
+The VAE baseline's validation SSIM rose from 0.40 to 0.46 within the first 10 epochs and then plateaued, while its training loss kept falling. The plateau reflects the limit of a single Gaussian latent, and the widening gap between training and validation loss suggests some overfitting. The VQ-VAE passed the 0.6 target after one epoch and reached a validation SSIM of 0.905 by epoch 15. Its codebook perplexity rose from about 170 to around 400 of 512 during training, meaning most codes were in use and the codebook did not collapse. Validation SSIM was still rising at epoch 15, so longer training might improve reconstruction further.
 
 ### Reconstruction: baseline vs VQ-VAE (identical test split)
 
@@ -67,6 +72,15 @@
 | VQ-VAE 64x32 | **0.917** | 0.86 M | ~386 / 512 |
 | VQ-VAE 32x16 | 0.778 | 0.99 M | ~419 / 512 |
 
+![Reconstructions](figures/reconstructions.png)
+*Test slices (top) and VQ-VAE 64×32 reconstructions (bottom).*
+
+The VQ-VAE reconstructed test slices with a mean SSIM of 0.917, compared with 0.506 for the VAE, while using far fewer parameters. Most of the VAE's parameters are in its fully connected layers, whereas the VQ-VAE is fully convolutional, so weight sharing keeps it small. The VAE compresses each slice into a single continuous latent vector (256 numbers) and averages over uncertainty, which causes blurry reconstructions. Instead of forcing the image through one vector, the VQ-VAE keeps a 64×32 grid of discrete codes, so spatial detail is preserved. Reducing the grid to 32×16 lowers reconstruction SSIM to 0.778 but slightly increases the parameter count, because the extra downsampling step adds one convolution layer to both the encoder and decoder. Its higher perplexity is likely because each code covers a larger 8×8 patch with more varied content, so more distinct codes are needed. Both perplexities indicate a healthy codebook.
+
+![Code maps](figures/code_maps.png)
+*Input, code-index map and reconstruction for four test slices.*
+
+The colours in the code maps have no ordering, since code numbers are arbitrary. The meaningful pattern is that uniform regions, such as the bladder and the background, are represented by a single repeated code, indicating that the codebook has learned reusable tissue patterns.
 
 ### Per-slice and per-patient analysis
 
@@ -76,7 +90,16 @@
 | 041 | 60 | 0.915 | 0.773 |
 | 042 | 60 | 0.904 | 0.759 |
 
+![Per-slice SSIM histogram](figures/ssim_histogram.png)
+![SSIM by slice position](figures/ssim_by_slice.png)
 
+All 540 test slices were reconstructed with SSIM between 0.880 and 0.951, so the model never comes close to failing the 0.6 target. Along each scan, SSIM declines steadily from about 0.94 at the first slices to about 0.89 at the last.
+
+![Best reconstructions](figures/best_cases_64x32.png)
+![Worst reconstructions](figures/worst_cases_64x32.png)
+*Highest- and lowest-SSIM test slices: input, reconstruction and absolute error.*
+
+The best slices contain large smooth regions with plenty of background and a bright bladder, while the worst contain dense muscle, bowel and bone texture, where the error concentrates. Since each code represents a 4×4 pixel patch, fine high-frequency texture is slightly smoothed. Patient 042 has the lowest mean SSIM in both the 64×32 (0.904) and 32×16 (0.759) models, so its scan appears genuinely harder rather than this being a quirk of one model.
 
 ### Generation: baseline vs VQ-VAE
 
@@ -87,6 +110,9 @@
 | Real train slices (reference) | 77.4 | 0.02 | 0.225 | n/a |
 | VQ-VAE reconstructions of train (reference) | 108.8 | 0.01 | 0.250 | 0.908 / 0.949 |
 
+*300 uncurated slices per group; FID and FD computed against all 540 real test slices; prior temperature 1.0. See the sample comparison figure in Section 1.*
+
+300 uncurated samples from each model were compared against the 540 real test slices. The VQ-VAE's Inception FID is 44% lower than the VAE's (234.0 vs 420.7), meaning its samples are closer to the real distribution, although still well above real training slices (77.4). Even VQ-VAE reconstructions of real slices score 108.8, so part of the gap to real slices comes from the decoder itself, not the prior. Diversity, measured as the mean SSIM between pairs of samples within a set (lower means more varied), is 0.272 for the VQ-VAE, close to real slices (0.225), while VAE samples are about twice as similar to each other (0.519), reflecting their blurry, averaged appearance: mode-collapse-like behaviour. VAE samples also have a higher nearest-neighbour SSIM to the training set (0.436 vs 0.344), but this reflects blur towards an "average slice" rather than copying, so this metric must be read alongside diversity. Inception was trained on natural photographs, so absolute FID values are not directly meaningful for MRI; I therefore use it only to rank models evaluated the same way. This ranking agrees with the VQ-VAE-feature distance and the visual comparison, which supports it. Finally, the VQ-VAE-feature distance uses the VQ-VAE's own encoder, so it naturally favours VQ-VAE outputs.
 
 ### Resource profiling
 
@@ -99,6 +125,7 @@
 | **PixelCNN 64x32, 60 blocks + pos (final)** | 4.96 M | 4.26 GB | 92 s / epoch; 100 samples in 76 s | Colab A100 |
 | Audit NN search (300 x 11,460 SSIM pairs) | - | - | 16 s | Colab A100 |
 
+The baseline, both VQ-VAEs and the 32×16 priors were trained on a laptop RTX 2050 (4 GB). The 60-block prior required more than 4 GB of VRAM, so it was trained on a Google Colab A100, where each epoch took 92 s and 100 samples took 76 s. Because the PixelCNN generates the 2,048 codes of each slice one at a time, each sample needs 2,048 forward passes (about 0.8 s per slice on the A100), so generation cost grows with grid size. The memorisation audit's nearest-neighbour search (300 slices against 11,460 training slices) took only 16 s on the A100. Running `predict.py` on the laptop and on the A100 gave identical test SSIM (0.9174), showing that results are reproducible across hardware.
 
 ## 6. Engineering Dilemma Investigation
  
