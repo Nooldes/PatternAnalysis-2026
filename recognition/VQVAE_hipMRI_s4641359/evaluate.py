@@ -19,6 +19,7 @@
 import argparse
 import json
 import os
+import sys
 import time
 
 import matplotlib
@@ -152,6 +153,8 @@ def save_interpolation(model, pairs, out_path, steps=8):
 # ----------------------------------------------------------------------
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Generative evaluation: VAE vs VQ-VAE + prior.")
     parser.add_argument("--data_root", required=True)
     parser.add_argument("--vqvae_ckpt", required=True)
