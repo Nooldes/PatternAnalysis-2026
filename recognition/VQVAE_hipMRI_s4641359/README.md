@@ -151,26 +151,36 @@ Each step below changed one thing, chosen by diagnosing the previous result. The
 ![NN-SSIM histogram](figures/audit_hist.png)
 ![Closest generated slices](figures/audit_top3.png)
 ![Nearest-neighbour patients](figures/audit_patients.png)
- 
+
 | Group (100 slices) | Mean NN-SSIM | Max NN-SSIM | Mean code overlap | Max code overlap | Distinct NN patients |
 |---|---|---|---|---|---|
 | Generated | 0.344 | 0.447 | 6.4% | 11.6% | 18 |
 | Test (VQ-VAE reconstructed) | 0.383 | 0.443 | 8.4% | 11.2% | 21 |
 | Test (raw) | 0.366 | 0.432 | 8.4% | 11.2% | 21 |
- 
 
- 
+If samples were near-copies of training scans, sharing them could leak real patients' data. A realistic-looking sample could be new or copied, and this cannot be told by eye, so a memorisation audit was done to check whether the model copies its training data rather than learning from it. 100 samples were drawn from the final prior at T = 1.0, and each was compared by SSIM against all 11,460 training slices, keeping the nearest neighbour: its SSIM, its patient ID, and the percentage of identical codes. The baseline was 100 real test slices (unseen patients), both raw and passed through the VQ-VAE. The reconstructed baseline is the fair comparison, because generated slices also come out of the decoder. The results in the table show no evidence of memorisation. The generated mean nearest-neighbour (NN) SSIM is lower than for real unseen slices (0.344 vs 0.383), so generated slices are less similar to the training set than a new patient is, the opposite of what copying would look like. Only one sample (sample 83) was above the baseline maximum, by 0.004 (0.447 vs 0.443). However, the closest-slices figure shows it shares only the general layout (background, outline, skin band): its bladder has a different size and brightness, and only 3.9% of its codes match. Mean code overlap is lower than for real slices (6.4% vs 8.4%) and the maximum is similar (11.6% vs 11.2%), so about 94% of each sample's codes differ from every training slice. For comparison, VQ-VAE reconstructions of training slices score 0.908 mean / 0.949 max against the training set (Section 5, generation table), whereas the generated maximum of 0.447–0.478 (0.447 in this audit, 0.478 across the 300 samples in evaluate.py) is nowhere near it. This also confirms the search finds the right slice, since reconstructions score about as high as the VQ-VAE's normal reconstruction quality.
+
+#### Patient analysis
+The nearest matches came from 18 different patients, showing the model is not reproducing one or two people. However, the distribution is skewed: 033 (23), 004 (21) and 027 (12). Patient size is not the reason, since these three have 480 slices, like most other patients. Real test slices also match 004 and 027 often, so these are "hub" patients that resemble many slices. However, the model is partly responsible: 033 is far more common for generated slices (23 vs 7 for real), while real slices' most common matches, 012 and 032, rarely appear (3 and 2). This indicates the prior favours some body types and under-produces others. That is mild partial mode coverage, not memorisation, since code overlap stays low. Overall, these results show no evidence of copying, but the low similarity partly reflects the samples' remaining imperfections. Moreover, pixel-level SSIM can miss shifted copies, and the baseline is about 78% from one patient (040), so it is not fully representative.
+
 ### Latent interpolation
 ![Latent interpolation](figures/interpolation.png)
 
- 
-### Failure autopsy (3-5 cases)
+To test whether the model learned a generalised representation of the anatomy or simply memorised it, I interpolated between the latents of two slices. Since the VQ-VAE uses a discrete codebook, averaging the code grids directly is meaningless. Instead, I linearly interpolated between the quantised latents of two slices, z(α) = (1 − α)z_A + αz_B, bypassed the quantiser (as in the course VQ-VAE demo) and decoded each step. This was tested on three pairs: a generated slice and its nearest training slice, two training patients, and two generated slices. The transitions were smooth and every frame looked like an MRI slice: the bladder changed size and brightness gradually and the body outline stayed stable. This indicates a continuous latent space rather than retrieval of stored scans. Some frames had a cross-fade appearance, because the blended vectors fall between codebook entries, which the decoder never saw during training.
+
+### Failure autopsy
 ![Worst reconstructions, 32x16](figures/worst_cases_32x16.png)
 
- 
+I examined four errors based on the drawn from the lowest-SSIM reconstructions, the closest and most distorted generated samples, and the prior and temperature experiments.
+
+1. **Fine texture in patient 042.** The worst reconstructions all come from patient 042, slices 36–41. The inputs have dense, bright, mottled texture, which the reconstruction smears into greyish regions. On the 32×16 model, SSIM drops to about 0.70, and the same region is 042's weakest on the 64×32 model too, suggesting the difficulty lies in this scan's content rather than one model. Each code represents an 8×8 (32×16) or 4×4 (64×32) pixel patch, so fine high-frequency texture cannot be represented exactly and is averaged out. This is a resolution limit of the codebook, which the 64×32 grid reduces.
+2. **Horizontal black bands.** The bands in steps 1 and 4 persisted even at full receptive field. Convolutions apply the same weights at every position, so the prior could not tell an edge row (where background belongs) from a central one. Once it generated a background code mid-image, the codes to its left made background the most likely next code, so it continued across the row and into the rows below. Adding the position embedding removed the bands, which confirmed the cause.
+3. **Smeared or ambiguous organs.** Some samples contain smeared or ambiguous regions and organs, such as sample 71 in the closest-slices figure. These remained after adding both depth and the position embedding. The likely cause is the PixelCNN's blind spot, which persists because the architecture itself was not changed. In addition, the PixelCNN makes 2,048 sequential decisions, so an early mistake carries through every later decision.
+4. **Low-temperature collapse.** At lower temperatures, samples were darker and emptier, with less diverse structure and oversized bright blobs, because low T repeatedly selects the most likely codes, which are mostly background and dark tissue. This was avoided by sampling at T = 1.0.
+
 ### Recommendation to the project manager
 
-
+**Overall, the synthetic cohort should not yet be used as training data for downstream models. The model is privacy-safe by this audit and clearly outperforms the baseline, but its samples are not yet anatomically reliable.** It fully meets four of the five acceptance criteria from the feasibility review. It reconstructs slices with SSIM 0.917, outperforms the VAE baseline (SSIM 0.917 vs 0.506; FID 234 vs 421), and the memorisation audit found no evidence of copying training patients: generated slices are less similar to the training set than unseen real slices, and the closest sample (0.478) is far below the ~0.91 that near-copies score. The unmet criterion is anatomical plausibility. Although the samples have a coherent overall layout, many contain ambiguous organs, smeared regions and no clear bone structure. It also avoids mode collapse: sample diversity (0.272) is close to real slices (0.225), unlike the VAE (0.519). In its current form, it could support work on the generation and sharing pipeline itself, but it should not be shared as a substitute for real data or used to train diagnostic models. Before use, I would replace the PixelCNN with a blind-spot-free prior, repeat the memorisation audit in feature space to catch shifted copies, evaluate on more test patients, and have a clinician review sample plausibility.
 
 ## 7. Limitations and Future Work
 
